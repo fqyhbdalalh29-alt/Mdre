@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>نظام صيانة الفروع</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<style>
+:root{box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);--bg:#f5f3ef;--c:#fff;--t:#222;--m:#777;--p:#b5452b;--b:#ddd}
+@media(prefers-color-scheme:dark){:root:not([data-theme=light]){--bg:#1b1a19;--c:#262523;--t:#eee;--m:#999;--b:#3a3836}}
+*{box-sizing:border-box}html{scroll-padding-top:env(safe-area-inset-top,0px)}
+body{margin:0;background:var(--bg);color:var(--t);font-family:Tahoma,Arial,sans-serif;padding:14px;max-width:760px;margin-inline:auto}
+h1{font-size:20px;margin:6px 0 14px}.card{background:var(--c);border:1px solid var(--b);border-radius:12px;padding:14px;margin-bottom:12px}
+button{font:inherit;cursor:pointer;border:0;border-radius:8px;padding:10px 14px;background:var(--p);color:#fff}
+button.g{background:transparent;color:var(--t);border:1px solid var(--b)}button.ok{background:#2e7d32}button.no{background:#c62828}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+input,textarea,select{width:100%;font:inherit;padding:10px;border:1px solid var(--b);border-radius:8px;background:var(--bg);color:var(--t);margin:6px 0}
+img.p{max-width:100%;max-height:220px;border-radius:8px;margin-top:6px;display:block}
+.tag{display:inline-block;padding:2px 10px;border-radius:99px;font-size:13px;color:#fff}.w{background:#e69500}.d{background:#2e7d32}.n{background:#c62828}
+.m{color:var(--m);font-size:13px}.top{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.tabs{display:flex;gap:8px;margin-bottom:12px}.tabs button{flex:1}
+</style></head><body>
+<div id="app"></div>
+<div id="rep" style="position:fixed;left:-9999px;top:0;width:700px;background:#fff;color:#000;padding:30px;direction:rtl;font-family:Tahoma,Arial"></div>
+<script>
+const BR=["كبده الرواد 1","كبده الرواد 2","كبده الرواد 3","كبده الرواد 4","كبده الرواد 5","كبده الرواد 6","كبده الرواد 7","كبده الروابي","حمسة الشيف","توب كبده"];
+const PASS="As@12345";
+let db=null,col=null,reqs=[],who=null,filter="all",loginMode=0;
+const $=id=>document.getElementById(id);
+const fmt=t=>t?new Date(t).toLocaleString("ar-SA",{dateStyle:"medium",timeStyle:"short"}):"—";
+const esc=s=>String(s||"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const ST={pending:["قيد الانتظار","w"],done:["تمت الصيانة","d"],notdone:["لم تتم الصيانة","n"]};
+
+async function init(){
+  render();
+  try{db=await claude.use("db");}catch(e){db=null}
+  if(db){col=db.collection("requests");col.onSnapshot(s=>{reqs=s.docs.map(d=>({...d.data(),id:d.id}));render()},()=>{});}
+  else{reqs=JSON.parse(localStorage.getItem("reqs")||"[]");render();}
+}
+async function save(r){
+  if(col){await col.doc(r.id).set(r);}
+  else{reqs=reqs.filter(x=>x.id!==r.id).concat(r);try{localStorage.setItem("reqs",JSON.stringify(reqs))}catch(e){}render();}
+}
+function shrink(file){return new Promise(res=>{if(!file)return res("");const fr=new FileReader();fr.onload=()=>{const im=new Image();im.onload=()=>{const k=Math.min(1,640/Math.max(im.width,im.height));const c=document.createElement("canvas");c.width=im.width*k;c.height=im.height*k;c.getContext("2d").drawImage(im,0,0,c.width,c.height);res(c.toDataURL("image/jpeg",.6))};im.src=fr.result};fr.readAsDataURL(file)})}
+
+function render(){
+  const a=$("app");
+  if(!who){
+    a.innerHTML=`<h1>🔧 نظام صيانة الفروع</h1><div class="card"><b>اختر فرعك للدخول</b><div class="grid" style="margin-top:10px">${BR.map((b,i)=>`<button class="g" onclick="who={t:'b',n:BR[${i}]};render()">${b}</button>`).join("")}</div></div>
+    <div class="card"><b>مسؤول الصيانة</b><input id="pw" type="password" placeholder="كلمة المرور"><button onclick="login()">دخول</button><div id="err" class="m" style="color:#c62828"></div></div>`;return;}
+  const top=`<div class="top"><h1>${who.t=="m"?"🛠 لوحة مسؤول الصيانة":"🏪 "+who.n}</h1><button class="g" onclick="who=null;render()">خروج</button></div>`;
+  if(who.t=="b"){
+    const mine=reqs.filter(r=>r.branch==who.n).sort((x,y)=>y.sentAt-x.sentAt);
+    a.innerHTML=top+`<div class="card"><b>طلب صيانة جديد</b>
+    <textarea id="pr" rows="3" placeholder="ما هي المشكلة؟"></textarea>
+    <textarea id="ca" rows="2" placeholder="سبب المشكلة (إن وجد)"></textarea>
+    <input id="im" type="file" accept="image/*" capture="environment">
+    <button onclick="send()">إرسال الطلب</button></div><h3>طلباتي</h3>`+(mine.map(card).join("")||'<p class="m">لا توجد طلبات</p>');
+  }else{
+    const all=reqs.filter(r=>filter=="all"||r.status==filter).sort((x,y)=>y.sentAt-x.sentAt);
+    a.innerHTML=top+`<div class="tabs">${[["all","الكل"],["pending","قيد الانتظار"],["done","تمت"],["notdone","لم تتم"]].map(([k,l])=>`<button class="${filter==k?"":"g"}" onclick="filter='${k}';render()">${l}</button>`).join("")}</div>`+(all.map(r=>card(r,1)).join("")||'<p class="m">لا توجد طلبات</p>');
+  }
+}
+function card(r,m){
+  const s=ST[r.status];
+  return `<div class="card"><div class="top"><b>${esc(r.branch)}</b><span class="tag ${s[1]}">${s[0]}</span></div>
+  <p><b>المشكلة:</b> ${esc(r.problem)}</p>${r.cause?`<p><b>السبب:</b> ${esc(r.cause)}</p>`:""}
+  ${r.img?`<img class="p" src="${r.img}">`:""}
+  <p class="m">أُرسل: ${fmt(r.sentAt)}<br>تمت المعالجة: ${fmt(r.doneAt)}</p>
+  ${r.status!="pending"?`<div style="border-top:1px solid var(--b);padding-top:8px"><p><b>سبب المشكلة (الصيانة):</b> ${esc(r.fixCause)}</p>${r.note?`<p><b>ملاحظة:</b> ${esc(r.note)}</p>`:""}${r.fixImg?`<img class="p" src="${r.fixImg}">`:""}</div>`:""}
+  ${m?(r.status=="pending"?`<div id="f${r.id}"><select id="s${r.id}" onchange="sel('${r.id}')"><option value="">— اختر الحالة —</option><option value="done">إتمام المشكلة</option><option value="notdone">عدم إتمام المشكلة</option></select><div id="x${r.id}"></div></div>`:`<button onclick="pdf('${r.id}')">📄 تحويل إلى PDF وإرسال</button>`):""}</div>`;
+}
+function login(){if($("pw").value===PASS){who={t:"m"};render()}else $("err").textContent="كلمة المرور غير صحيحة"}
+async function send(){
+  const p=$("pr").value.trim();if(!p)return alert("اكتب المشكلة");
+  const img=await shrink($("im").files[0]);
+  await save({id:"r"+Date.now(),branch:who.n,problem:p,cause:$("ca").value.trim(),img,status:"pending",sentAt:Date.now(),doneAt:0});
+  alert("تم إرسال الطلب");
+}
+function sel(id){
+  const v=$("s"+id).value,x=$("x"+id);
+  if(!v){x.innerHTML="";return}
+  x.innerHTML=(v=="done"?`<textarea id="c${id}" rows="2" placeholder="سبب المشكلة"></textarea><label class="m">صورة بعد الإصلاح</label><input id="i${id}" type="file" accept="image/*" capture="environment">`:`<textarea id="c${id}" rows="2" placeholder="سبب عدم الإتمام"></textarea><input id="i${id}" type="file" accept="image/*" capture="environment">`)+`<textarea id="n${id}" rows="2" placeholder="ملاحظات (اختياري)"></textarea><button class="${v=="done"?"ok":"no"}" onclick="fin('${id}','${v}')">حفظ</button>`;
+}
+async function fin(id,v){
+  const r=reqs.find(x=>x.id==id),c=$("c"+id).value.trim();
+  if(!c)return alert("اكتب السبب");
+  const fixImg=await shrink($("i"+id).files[0]);
+  await save({...r,status:v,fixCause:c,note:$("n"+id).value.trim(),fixImg,doneAt:Date.now()});
+}
+async function pdf(id){
+  const r=reqs.find(x=>x.id==id),s=ST[r.status][0],im=(u,t)=>u?`<p><b>${t}</b></p><img src="${u}" style="max-width:100%;max-height:260px">`:"";
+  $("rep").innerHTML=`<h2 style="text-align:center;border-bottom:2px solid #b5452b;padding-bottom:8px">تقرير صيانة</h2>
+  <p><b>الفرع:</b> ${esc(r.branch)}</p><p><b>الحالة:</b> ${s}</p><p><b>المشكلة:</b> ${esc(r.problem)}</p><p><b>السبب (الفرع):</b> ${esc(r.cause)||"—"}</p>${im(r.img,"صورة المشكلة")}
+  <p><b>وقت إرسال الطلب:</b> ${fmt(r.sentAt)}</p><p><b>وقت المعالجة:</b> ${fmt(r.doneAt)}</p>
+  <p><b>سبب المشكلة (الصيانة):</b> ${esc(r.fixCause)}</p><p><b>ملاحظات:</b> ${esc(r.note)||"—"}</p>${im(r.fixImg,"صورة بعد الصيانة")}`;
+  try{
+    const cv=await html2canvas($("rep"),{scale:1.5,backgroundColor:"#fff"});
+    const {jsPDF}=window.jspdf,d=new jsPDF("p","mm","a4"),w=190,h=cv.height*w/cv.width;
+    d.addImage(cv.toDataURL("image/jpeg",.85),"JPEG",10,10,w,Math.min(h,277));
+    const blob=d.output("blob"),name="صيانة-"+r.branch+".pdf";
+    const dl=await claude.use("downloads");
+    if(dl){await dl.save({filename:name,data:blob})}
+    else{const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download=name;a.click()}
+    const f=new File([blob],name,{type:"application/pdf"});
+    if(navigator.canShare&&navigator.canShare({files:[f]}))navigator.share({files:[f],title:name}).catch(()=>{});
+  }catch(e){alert("تعذر إنشاء PDF")}
+}
+init();
+</script></body></html>
